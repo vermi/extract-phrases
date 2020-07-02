@@ -16,6 +16,7 @@ import os.path
 import argparse
 import signal
 import sys
+from textwrap import wrap
 import datetime as dt
 from io import StringIO
 
@@ -23,10 +24,34 @@ from io import StringIO
 import pke
 import ujson as json
 from nltk.corpus import stopwords
+from tinydb import TinyDB, Query
+from markdown import Markdown
 from progress.bar import Bar
 
 # Globals
 stdoutOnly = False
+
+
+def unmark_element(element, stream=None):
+    if stream is None:
+        stream = StringIO()
+    if element.text:
+        stream.write(element.text)
+    for sub in element:
+        unmark_element(sub, stream)
+    if element.tail:
+        stream.write(element.tail)
+    return stream.getvalue()
+
+
+# patching Markdown
+Markdown.output_formats["plain"] = unmark_element
+__md = Markdown(output_format="plain")
+__md.stripTopLevelTags = False
+
+
+def unmark(text):
+    return __md.convert(text)
 
 
 def now():
@@ -53,15 +78,60 @@ def sigintHandler(signal, frame):
     sys.exit(0)
 
 
+def extract(corpus):
+    extractor = pke.unsupervised.YAKE()
+    extractor.load_document(input=corpus, language="en", normalization=None)
+
+    stoplist = stopwords.words("english")
+    extractor.candidate_selection(n=3, stoplist=stoplist)
+    extractor.candidate_weighting(stoplist=stoplist)
+    keyphrases = extractor.get_n_best()
+
+    return keyphrases
+
+
 def extract_blob(text):
-    result = {
-        "words": len(text.split()),
-    }
-    writeJson(result)
+    phrases = extract(text)
+    writeJson(phrases)
 
 
-def extract_file(fileName):
-    pass
+def extract_file(fpath):
+    if not os.path.isfile(fpath):
+        print("\n! File {0} not found.".format(fpath))
+        exit()
+
+    db = TinyDB(fpath, indent=4)
+    if not Query().subreddit.exists():
+        print("\n! Incorrect database type. Exiting.")
+        exit()
+
+    posts_table = db.table("posts")
+    comments_table = db.table("comments")
+
+    corpus = ""
+
+    with Bar(
+        "Building corpus for extraction", max=len(posts_table) + len(comments_table)
+    ) as bar:
+        for document in posts_table.all():
+            if document["text"] != "":
+                corpus += unmark(document["text"]).replace("\n", " ").lower() + " "
+            bar.next()
+
+        for document in comments_table.all():
+            if document["upvotes"] > 0 and document["text"] != "":
+                corpus += unmark(document["text"]).replace("\n", " ").lower() + " "
+            bar.next()
+
+    chunks = wrap(corpus, 999999, break_long_words=False)
+
+    phrases = []
+    with Bar("Extracting phrases from chunks", max=len(chunks)) as bar:
+        for x in chunks:
+            phrases += extract(x)
+            bar.next()
+
+    writeJson(phrases)
 
 
 def main():
@@ -90,7 +160,7 @@ def main():
     stdoutOnly = args.stdoutOnly
 
     if args.t:
-        if args.t == '-' and not sys.stdin.isatty():
+        if args.t == "-" and not sys.stdin.isatty():
             extract_blob(sys.stdin.read())
         else:
             extract_blob(args.t)
