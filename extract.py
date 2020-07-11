@@ -23,7 +23,6 @@ from io import StringIO
 # Third-party imports
 import pke
 import ujson as json
-from nltk.corpus import stopwords
 from tinydb import TinyDB, Query
 from markdown import Markdown
 from progress.bar import Bar
@@ -79,12 +78,14 @@ def sigintHandler(signal, frame):
 
 
 def extract(corpus):
-    extractor = pke.unsupervised.YAKE()
+
+    pos = {'NOUN', 'PROPN', 'ADJ'}
+
+    extractor = pke.unsupervised.TextRank()
     extractor.load_document(input=corpus, language="en", normalization=None)
 
-    stoplist = stopwords.words("english")
-    extractor.candidate_selection(n=3, stoplist=stoplist)
-    extractor.candidate_weighting(stoplist=stoplist)
+    extractor.candidate_selection(pos=pos)
+    extractor.candidate_weighting(window=2, pos=pos, top_percent=0.33)
     keyphrases = extractor.get_n_best()
 
     return keyphrases
@@ -119,7 +120,7 @@ def extract_file(fpath):
             bar.next()
 
         for document in comments_table.all():
-            if document["upvotes"] > 0 and document["text"] != "":
+            if document["upvotes"] > 50 and document["text"] != "":
                 corpus += unmark(document["text"]).replace("\n", " ").lower() + " "
             bar.next()
 
